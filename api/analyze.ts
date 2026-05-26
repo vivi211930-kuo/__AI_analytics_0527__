@@ -1,37 +1,5 @@
-import express from "express";
-import path from "path";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { GoogleGenAI } from "@google/genai";
-import dotenv from "dotenv";
-
-dotenv.config();
-
-const app = express();
-const PORT = 3000;
-
-// Increase request limit for large CSV strings
-app.use(express.json({ limit: "15mb" }));
-app.use(express.urlencoded({ extended: true, limit: "15mb" }));
-
-// Initialize the Google Gen AI client lazily
-let aiClient: GoogleGenAI | null = null;
-
-function getAiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY 尚未設定，請在 Settings ＞ Secrets 面板中設定金鑰。");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  }
-  return aiClient;
-}
 
 // System Instructions to guide the AI's data analysis behavior and output format
 const SYSTEM_INSTRUCTIONS = `
@@ -61,11 +29,18 @@ function sanitizeCsv(csvString: string): string {
   return csvString.trim();
 }
 
-// Main analysis route
-app.post("/api/analyze", async (req, res) => {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Only allow POST requests
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      success: false,
+      error: "僅支援 POST 請求！",
+    });
+  }
+
   try {
-    const { csvData, reportType, customPrompt, analysisMode } = req.body;
-    
+    const { csvData, reportType, customPrompt, analysisMode, provider = "gemini" } = req.body;
+
     if (!csvData || typeof csvData !== "string") {
       return res.status(400).json({
         success: false,
@@ -81,9 +56,7 @@ app.post("/api/analyze", async (req, res) => {
       });
     }
 
-    // Initialize client and run model
-    const ai = getAiClient();
-    
+    // Build prompting context
     let promptText = `
 這是供分析的 CSV 數據內容：
 \`\`\`csv
@@ -123,59 +96,93 @@ ${cleanCsv}
 
     promptText += "\n請以 Markdown 格式直接回覆分析內容，絕對不要有任何問候語、前言或任何結尾贅字。";
 
-    // Call the model (we prefer the stable 'gemini-3.5-flash' for standard analytical tasks)
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: promptText,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTIONS,
-        temperature: 0.2, // lower temperature for more consistent, factual analytical output
-      },
-    });
+    let report = "";
 
-    const report = response.text;
-    
-    return res.json({
+    if (provider === "nvidia") {
+      const apiKey = process.env.NVIDIA_API_KEY;
+      if (!apiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "NVIDIA_API_KEY 尚未設定，請在 Vercel 或本地環境變數中設定金鑰。",
+        });
+      }
+
+      // Proactively call NVIDIA API using standard fetch
+      const nvidiaResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "nvidia/nemotron-mini-4b-instruct",
+          messages: [
+            {
+              role: "system",
+              content: SYSTEM_INSTRUCTIONS,
+            },
+            {
+              role: "user",
+              content: promptText,
+            },
+          ],
+          temperature: 0.2,
+        }),
+      });
+
+      if (!nvidiaResponse.ok) {
+        const errorDetail = await nvidiaResponse.text();
+        throw new Error(`NVIDIA API 呼叫失敗 (${nvidiaResponse.status}): ${errorDetail}`);
+      }
+
+      const nvidiaData = await nvidiaResponse.json();
+      report = nvidiaData.choices?.[0]?.message?.content || "";
+    } else {
+      // Default to Google Gemini
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(400).json({
+          success: false,
+          error: "GEMINI_API_KEY 尚未設定，請在 Vercel 或本地環境變數中設定金鑰。",
+        });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            "User-Agent": "aistudio-build",
+          },
+        },
+      });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-lite",
+        contents: promptText,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTIONS,
+          temperature: 0.2,
+        },
+      });
+
+      report = response.text || "";
+    }
+
+    return res.status(200).json({
       success: true,
       report: report || "未能產生分析結果，請檢查輸入數據是否有誤。",
       metadata: {
         timestamp: new Date().toISOString(),
         csvLength: cleanCsv.length,
         linesAnalyzed: cleanCsv.split("\n").filter(line => line.trim()).length,
-      }
+      },
     });
 
   } catch (error: any) {
-    console.error("AI Analysis Error:", error);
+    console.error("AI Analysis Serverless Function Error:", error);
     return res.status(500).json({
       success: false,
       error: error?.message || "伺服器在進行 AI 分析時發生未知錯誤，請稍後再試。",
     });
   }
-});
-
-// Vite middleware for dev or Static delivery for production
-const startServer = async () => {
-  if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[FULL-STACK] Server started on http://localhost:${PORT} with NODE_ENV=${process.env.NODE_ENV}`);
-  });
-};
-
-startServer().catch((err) => {
-  console.error("Failed to start full-stack server:", err);
-});
+}

@@ -36,6 +36,7 @@ export default function App() {
   const [reportType, setReportType] = useState<ReportType>("all");
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("fast");
   const [customPrompt, setCustomPrompt] = useState<string>("");
+  const [provider, setProvider] = useState<"gemini" | "nvidia">("gemini");
 
   // UI state
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
@@ -57,7 +58,9 @@ export default function App() {
   const loaderMessages = [
     "正在解析 CSV 欄位維度與格式...",
     "正在對齊關鍵指標 (KPI) 以及過濾空白內容...",
-    "正在啟動 Google Gemini 3.5 智慧分析大腦...",
+    provider === "gemini"
+      ? "正在啟動 Google Gemini 智慧分析大腦..."
+      : "正在啟動 NVIDIA Nemotron 智慧分析大腦...",
     "正在多維度掃描數據，尋找異常高低點與變形趨勢...",
     "正在構建繁體中文專業數據洞察報告表格...",
     "正在彙整 3 到 5 項具體可行、即刻落地的商業改善建言...",
@@ -75,7 +78,7 @@ export default function App() {
       }, 3500);
     }
     return () => clearInterval(interval);
-  }, [isAnalyzing]);
+  }, [isAnalyzing, provider]);
 
   // Load history on mount
   useEffect(() => {
@@ -213,6 +216,7 @@ export default function App() {
           reportType,
           customPrompt,
           analysisMode,
+          provider,
         }),
       });
 
@@ -246,6 +250,7 @@ export default function App() {
         linesCount: currentStats.lines,
         report: data.report,
         title: `${reportNameMapping[reportType]} - 共 ${currentStats.lines} 筆數據`,
+        provider,
       };
 
       const updatedHistory = [newItem, ...historyList].slice(0, 30); // limit to 30 histories
@@ -268,6 +273,9 @@ export default function App() {
       lines: item.linesCount,
       chars: item.csvLength,
     });
+    if (item.provider) {
+      setProvider(item.provider);
+    }
   };
 
   // Delete a history item
@@ -413,6 +421,43 @@ export default function App() {
                 <Settings className="h-4 w-4 text-[#4f46e5]" />
                 第二步：自訂分析設定
               </span>
+
+              {/* AI Provider Choose */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-600 block">AI 服務提供商：</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setProvider("gemini")}
+                    className={`flex-1 p-2.5 rounded-lg border transition-all text-xs flex flex-col items-center justify-center text-center cursor-pointer ${
+                      provider === "gemini"
+                        ? "border-[#4f46e5] bg-indigo-50/20 text-[#4f46e5] ring-1 ring-[#4f46e5]"
+                        : "border-[#e2e8f0] hover:border-slate-300 text-slate-700 bg-white"
+                    }`}
+                  >
+                    <span className="font-bold flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                      Google Gemini
+                    </span>
+                    <span className="text-[10px] text-slate-400 mt-0.5 font-normal">gemini-2.5-flash-lite</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProvider("nvidia")}
+                    className={`flex-1 p-2.5 rounded-lg border transition-all text-xs flex flex-col items-center justify-center text-center cursor-pointer ${
+                      provider === "nvidia"
+                        ? "border-[#10b981] bg-emerald-50/20 text-[#047857] ring-1 ring-[#10b981]"
+                        : "border-[#e2e8f0] hover:border-slate-300 text-slate-700 bg-white"
+                    }`}
+                  >
+                    <span className="font-bold flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      NVIDIA
+                    </span>
+                    <span className="text-[10px] text-slate-400 mt-0.5 font-normal">nemotron-mini-4b</span>
+                  </button>
+                </div>
+              </div>
 
               {/* Report Strategy Choose */}
               <div className="space-y-2">
@@ -707,6 +752,11 @@ export default function App() {
                         <span className="inline-flex items-center px-2.5 py-1 rounded bg-indigo-50 text-[#4f46e5] text-xs font-semibold">
                           ⚡ 模式：{analysisMode === "deep" ? "深度剖析" : "快速精煉"}
                         </span>
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded text-xs font-semibold ${
+                          provider === "nvidia" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"
+                        }`}>
+                          🤖 引擎：{provider === "nvidia" ? "NVIDIA" : "Gemini"}
+                        </span>
                         <span className="inline-flex items-center px-2.5 py-1 rounded bg-amber-50 text-amber-700 text-xs font-semibold">
                           🎯 著重：
                           {reportType === "all" && "全方位綜合報告"}
@@ -799,12 +849,22 @@ export default function App() {
                           <span className="text-xs font-bold text-[#1e293b] group-hover:text-[#4f46e5] transition-colors block">
                             {item.title}
                           </span>
-                          <div className="flex items-center space-x-2 text-[10px] text-[#64748b]">
+                          <div className="flex items-center space-x-2 text-[10px] text-[#64748b] flex-wrap gap-y-1">
                             <span>🕒 {item.timestamp}</span>
                             <span>•</span>
                             <span>模式：{item.analysisMode === "deep" ? "深度" : "快速"}</span>
                             <span>•</span>
                             <span>大小：{(item.csvLength / 1000).toFixed(1)} KB</span>
+                            {item.provider && (
+                              <>
+                                <span>•</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                  item.provider === "nvidia" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"
+                                }`}>
+                                  {item.provider === "nvidia" ? "NVIDIA" : "Gemini"}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
 

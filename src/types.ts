@@ -28,4 +28,5 @@ export interface AnalysisHistoryItem {
   linesCount: number;
   report: string;
   title: string;
+  provider?: "gemini" | "nvidia";
 }
